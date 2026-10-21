@@ -1,6 +1,7 @@
 import streamlit as st
 import pickle
 import pandas as pd
+import numpy as np
 import re
 import emoji
 import nltk
@@ -11,16 +12,70 @@ import matplotlib.pyplot as plt
 from wordcloud import WordCloud
 
 # ============================================================
-# 1. Konfigurasi Halaman Streamlit
+# 1. Konfigurasi Halaman & Styling Minimalis Profesional
 # ============================================================
 st.set_page_config(
-    page_title="Analisis Sentimen Film Jumbo - SVM",
-    page_icon="🎬",
+    page_title="Analisis Sentimen: Film Jumbo (SVM)",
+    page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
-# Download NLTK data jika belum ada di server Streamlit
+# Custom CSS untuk tampilan elegan, clean, dan bebas "AI Slop"
+st.markdown("""
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    
+    html, body, [class*="css"] {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    
+    /* Header typography */
+    h1, h2, h3 {
+        font-weight: 600 !important;
+        letter-spacing: -0.02em;
+    }
+    
+    /* Clean metric card */
+    .metric-container {
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 16px;
+        background-color: #ffffff;
+    }
+    
+    /* Status Pills */
+    .pill-positive {
+        background-color: #ecfdf5;
+        color: #065f46;
+        border: 1px solid #a7f3d0;
+        padding: 6px 14px;
+        border-radius: 9999px;
+        font-weight: 600;
+        font-size: 0.95rem;
+        display: inline-block;
+    }
+    
+    .pill-negative {
+        background-color: #fef2f2;
+        color: #991b1b;
+        border: 1px solid #fecaca;
+        padding: 6px 14px;
+        border-radius: 9999px;
+        font-weight: 600;
+        font-size: 0.95rem;
+        display: inline-block;
+    }
+
+    /* Clean divider */
+    hr {
+        margin: 2rem 0;
+        border-color: #f1f5f9;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Resource NLTK
 for res in ['stopwords', 'punkt', 'punkt_tab']:
     try:
         nltk.download(res, quiet=True)
@@ -28,17 +83,15 @@ for res in ['stopwords', 'punkt', 'punkt_tab']:
         pass
 
 # ============================================================
-# 2. Cache Resource (Muat Model, TF-IDF, Kamus Slang Sekali Saja)
+# 2. Muat Model, Vectorizer & Kamus Terlatih
 # ============================================================
 @st.cache_resource
-def load_assets():
-    # Muat Model SVM & TF-IDF
+def load_model_assets():
     with open("model.pkl", "rb") as f:
         model = pickle.load(f)
     with open("tfidf.pkl", "rb") as f:
         tfidf = pickle.load(f)
 
-    # Muat Kamus Slang
     try:
         slang_df = pd.read_csv("kamus_alay.csv")
         slang_dict = dict(zip(
@@ -73,7 +126,6 @@ def load_assets():
     }
     slang_dict.update(custom_slang)
 
-    # Stopwords
     NEGATION_WORDS = {
         "tidak", "bukan", "jangan", "kurang", "belum", "tanpa",
         "anti", "gak", "ga", "nggak", "ndak", "tak", "enggak",
@@ -91,27 +143,26 @@ def load_assets():
 
     all_stopwords = (base_sw | custom_sw | DOMAIN_STOPWORDS) - NEGATION_WORDS - PROTECTED_WORDS
 
-    # Stemmer Sastrawi
     factory = StemmerFactory()
     stemmer = factory.create_stemmer()
 
     return model, tfidf, slang_dict, all_stopwords, stemmer, NEGATION_WORDS
 
-model, tfidf, slang_dict, ALL_STOPWORDS, stemmer, NEGATION_WORDS = load_assets()
+model, tfidf, slang_dict, ALL_STOPWORDS, stemmer, NEGATION_WORDS = load_model_assets()
 
 # ============================================================
-# 3. Fungsi Preprocessing Teks
+# 3. Pipeline Preprocessing Teks
 # ============================================================
-def preprocess_text(text):
-    # 1. Demojize
+def preprocess(text):
+    # Demojize internal
     text = emoji.demojize(str(text), language='en')
     text = re.sub(r':([a-zA-Z0-9_]+):', lambda m: ' ' + m.group(1).replace('_', ' ') + ' ', text)
-    # 2. Lowercase & Clean Regex
+    # Cleaning
     text = re.sub(r'[^a-zA-Z\s]', ' ', text).strip().lower()
     text = re.sub(r'\s+', ' ', text)
-    # 3. Tokenize
+    # Tokenisasi
     tokens = word_tokenize(text)
-    # 4. Slang Normalization & rule imbuhan nge-...-in
+    # Normalisasi slang
     norm_tokens = []
     for w in tokens:
         if w in slang_dict:
@@ -121,160 +172,225 @@ def preprocess_text(text):
             norm_tokens.append(slang_dict.get(root, root))
         else:
             norm_tokens.append(w)
-    # 5. Stopword removal (jaga kata sentimen & negasi)
+    # Filter kata tidak bermakna
     filtered = [w for w in norm_tokens if w not in ALL_STOPWORDS and len(w) > 1]
-    # 6. Stemming
+    # Stemming Sastrawi
     stemmed = [stemmer.stem(w) for w in filtered]
 
     return ' '.join(stemmed), stemmed
 
 # ============================================================
-# 4. Sidebar Navigasi & Informasi Proyek
+# 4. Header & Pengantar Akademik
 # ============================================================
-with st.sidebar:
-    st.image("https://img.icons8.com/color/96/000000/movie-projector.png", width=70)
-    st.title("🎬 Film Jumbo")
-    st.markdown("**Analisis Sentimen Komentar YouTube**")
-    st.markdown("---")
-    st.markdown("### 📌 Informasi Metodologi")
-    st.markdown("""
-    - **Algoritma**: Support Vector Machine (SVM)
-    - **Kernel**: Linear (`class_weight='balanced'`)
-    - **Pelabelan**: InSet Lexicon (Berbobot)
-    - **Klasifikasi**: Biner (Positif vs Negatif)
-    - **Akurasi Model**: **86.0%**
-    - **F1-Score Positif**: **0.90**
-    - **F1-Score Negatif**: **0.74**
-    """)
-    st.markdown("---")
-    st.markdown("🔗 **[GitHub Repository](https://github.com/Vannnd1/jumbo-movie-sentiment-analysis)**")
-    st.caption("Dibuat oleh: [@Vannnd1](https://github.com/Vannnd1)")
+st.title("Analisis Sentimen Komentar YouTube: Film Jumbo")
+st.markdown(
+    "Implementasi Model **Support Vector Machine (SVM)** dengan Pelabelan **InSet Lexicon** "
+    "untuk Klasifikasi Sentimen Biner Opini Penonton."
+)
+
+st.markdown("---")
 
 # ============================================================
-# 5. Tampilan Utama Aplikasi
+# 5. Navigasi Tab
 # ============================================================
-st.title("🎬 Analisis Sentimen Penonton Film Animasi Jumbo")
-st.markdown("""
-Aplikasi web ini menggunakan **Machine Learning Support Vector Machine (SVM)** dan metode **InSet Lexicon** 
-untuk memprediksi polaritas sentimen ulasan penonton terhadap teaser/trailer film animasi **Jumbo** di YouTube.
-""")
-
-tab1, tab2, tab3 = st.tabs([
-    "🔍 Uji Sentimen Real-Time", 
-    "📊 Dashboard Opini Penonton", 
-    "📚 Tentang Penelitian"
+tab_infer, tab_data, tab_model = st.tabs([
+    "Pengujian Model", 
+    "Distribusi Korpus", 
+    "Spesifikasi Teknis"
 ])
 
 # ------------------------------------------------------------
-# TAB 1: Live Testing
+# TAB 1: Pengujian Model (Inference)
 # ------------------------------------------------------------
-with tab1:
-    st.subheader("Uji Kalimat Komentar Penonton")
-    st.write("Ketikkan kalimat ulasan atau klik salah satu contoh di bawah ini:")
+with tab_infer:
+    st.markdown("### Pengujian Inferensi Teks")
+    st.write("Masukkan ulasan komentar penonton untuk menguji respon klasifikasi model secara langsung.")
 
-    col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
-    sample_text = ""
-    if col_btn1.button("Contoh 1 (Pujian Visual)"):
-        sample_text = "Animasi jumbo gokil keren banget, visualnya mantap parah!"
-    if col_btn2.button("Contoh 2 (Kritik Alur)"):
-        sample_text = "Alurnya ngebosenin dan ceritanya hambar banget, kecewa."
-    if col_btn3.button("Contoh 3 (Penyangkalan)"):
-        sample_text = "Filmnya gak mengecewakan sama sekali, wajib nonton di bioskop!"
-    if col_btn4.button("Contoh 4 (Kritik Halus)"):
-        sample_text = "Kurang suka sama pengisi suaranya, masih agak kaku."
+    col_input, col_meta = st.columns([2, 1])
 
-    user_input = st.text_area(
-        "Masukkan teks komentar di sini:",
-        value=sample_text,
-        placeholder="Contoh: Keren banget visualnya bikin merinding...",
-        height=100
-    )
+    with col_input:
+        preset = st.selectbox(
+            "Pilih sampel pengujian (opsional):",
+            [
+                "Ketik ulasan sendiri...",
+                "Animasi film Jumbo keren banget, kualitas visualnya luar biasa.",
+                "Alurnya membosankan dan ceritanya hambar, sangat mengecewakan.",
+                "Karya anak bangsa yang patut diapresiasi, bangga banget!",
+                "Pengisi suaranya masih kaku dan animasi gerakannya kurang halus."
+            ]
+        )
 
-    if st.button("🚀 Analisis Sentimen Sekarang", type="primary"):
-        if not user_input.strip():
-            st.warning("⚠️ Mohon masukkan teks komentar terlebih dahulu.")
+        default_text = "" if preset == "Ketik ulasan sendiri..." else preset
+        user_text = st.text_area(
+            "Teks Komentar:",
+            value=default_text,
+            height=110,
+            placeholder="Tuliskan ulasan komentar di sini..."
+        )
+
+        submit = st.button("Jalankan Klasifikasi", type="primary")
+
+    with col_meta:
+        st.markdown("**Parameter Inferensi:**")
+        st.markdown("""
+        - **Model**: Linear SVM (`C=1.0`)
+        - **Bobot Kelas**: `balanced`
+        - **Ekstraksi**: TF-IDF Unigram + Bigram
+        - **Kamus Fitur**: 1.644 n-grams
+        """)
+
+    if submit and user_text.strip():
+        clean_text, tokens = preprocess(user_text)
+
+        if not clean_text.strip():
+            st.warning("Teks tidak mengandung token yang dapat dikenali setelah preprocessing.")
         else:
-            with st.spinner("Memproses teks dan menganalisis sentimen..."):
-                clean_text, tokens = preprocess_text(user_input)
+            vec = tfidf.transform([clean_text])
+            prediction = model.predict(vec)[0]
+            decision = model.decision_function(vec)[0]
 
-                if not clean_text.strip():
-                    st.info("ℹ️ Tidak ditemukan kata berbobot sentimen setelah pembersihan teks. Silakan coba kalimat yang lebih spesifik.")
+            st.markdown("---")
+            st.markdown("### Hasil Evaluasi Sentimen")
+
+            col_res_a, col_res_b, col_res_c = st.columns([1, 1, 2])
+
+            with col_res_a:
+                st.markdown("**Prediksi Kelas:**")
+                if prediction == "positive":
+                    st.markdown('<span class="pill-positive">POSITIF</span>', unsafe_allow_html=True)
                 else:
-                    vec = tfidf.transform([clean_text])
-                    pred = model.predict(vec)[0]
-                    decision_val = model.decision_function(vec)[0]
+                    st.markdown('<span class="pill-negative">NEGATIF</span>', unsafe_allow_html=True)
 
-                    st.markdown("---")
-                    st.subheader("Hasil Analisis:")
+            with col_res_b:
+                st.markdown("**Decision Margin:**")
+                st.metric(
+                    label="Margin Jarak (w·x + b)",
+                    value=f"{decision:+.4f}"
+                )
 
-                    col_res1, col_res2 = st.columns([1, 2])
+            with col_res_c:
+                st.markdown("**Representasi Fitur Bersih:**")
+                st.code(clean_text, language="text")
 
-                    with col_res1:
-                        if pred == "positive":
-                            st.success("### 🟢 SENTIMEN POSITIF")
-                            st.write("Penonton cenderung **menyukai** atau memberikan apresiasi.")
-                        else:
-                            st.error("### 🔴 SENTIMEN NEGATIF")
-                            st.write("Penonton cenderung **mengkritik** atau merasa kurang puas.")
+            # Analisis Fitur Kata Kunci yang Berkontribusi
+            feature_names = tfidf.get_feature_names_out()
+            feature_indices = vec.nonzero()[1]
+            coefs = model.coef_[0]
 
-                    with col_res2:
-                        with st.expander("🔎 Lihat Rincian Tahap Preprocessing Teks", expanded=True):
-                            st.write(f"**Teks Asli**: {user_input}")
-                            st.write(f"**Hasil Preprocessing**: `{clean_text}`")
-                            st.write(f"**Token Kata**: `{tokens}`")
-                            st.caption(f"Decision Function Score: {decision_val:.4f}")
+            matched_features = []
+            for idx in feature_indices:
+                word = feature_names[idx]
+                weight = coefs[idx]
+                matched_features.append({
+                    "Fitur N-Gram": word,
+                    "Bobot SVM": round(float(weight), 4),
+                    "Pengaruh": "Positif" if weight > 0 else "Negatif"
+                })
+
+            if matched_features:
+                st.markdown("**Dekomposisi Bobot Fitur pada Kalimat:**")
+                df_features = pd.DataFrame(matched_features).sort_values(by="Bobot SVM", ascending=False)
+                st.dataframe(df_features, use_container_width=True, hide_index=True)
 
 # ------------------------------------------------------------
-# TAB 2: Dashboard Opini Penonton
+# TAB 2: Distribusi Korpus & Data
 # ------------------------------------------------------------
-with tab2:
-    st.subheader("Statistik Data Opini Penonton Film Jumbo")
-    st.write("Ringkasan distribusi polaritas dari ribuan komentar yang telah dianalisis pada trailer YouTube:")
-
+with tab_data:
+    st.markdown("### Ringkasan Korpus Data Latih")
+    
     try:
-        df_labeled = pd.read_excel("labeled_comments.xlsx")
-        counts = df_labeled['sentiment'].value_counts()
-        total_data = len(df_labeled)
-        pos_count = counts.get('positive', 0)
-        neg_count = counts.get('negative', 0)
-        pos_pct = (pos_count / total_data) * 100
-        neg_pct = (neg_count / total_data) * 100
+        df_corpus = pd.read_excel("labeled_comments.xlsx")
+        n_total = len(df_corpus)
+        counts = df_corpus['sentiment'].value_counts()
+        n_pos = counts.get('positive', 0)
+        n_neg = counts.get('negative', 0)
 
-        col_m1, col_m2, col_m3 = st.columns(3)
-        col_m1.metric("Total Komentar Dianalisis", f"{total_data:,}")
-        col_m2.metric("Sentimen Positif", f"{pos_count:,} ({pos_pct:.1f}%)")
-        col_m3.metric("Sentimen Negatif", f"{neg_count:,} ({neg_pct:.1f}%)")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total Komentar Biner", f"{n_total:,}")
+        m2.metric("Sentimen Positif", f"{n_pos:,}", f"{(n_pos/n_total)*100:.1f}%")
+        m3.metric("Sentimen Negatif", f"{n_neg:,}", f"{(n_neg/n_total)*100:.1f}%")
 
-        col_c1, col_c2 = st.columns(2)
+        st.markdown("---")
+        c_left, c_right = st.subplots if hasattr(st, "subplots") else (None, None)
 
-        with col_c1:
-            st.write("#### Distribusi Sentimen (Diagram Batang)")
-            fig_bar, ax_bar = plt.subplots(figsize=(6, 4))
-            ax_bar.bar(["Positif", "Negatif"], [pos_count, neg_count], color=["#28a745", "#dc3545"])
-            ax_bar.set_ylabel("Jumlah Komentar")
+        col_g1, col_g2 = st.columns(2)
+
+        with col_g1:
+            st.markdown("**Distribusi Proporsi Kelas**")
+            fig_bar, ax_bar = plt.subplots(figsize=(5, 3.5), facecolor='#ffffff')
+            bars = ax_bar.bar(
+                ["Positif", "Negatif"], 
+                [n_pos, n_neg], 
+                color=["#2b6cb0", "#c53030"],
+                width=0.45
+            )
+            ax_bar.spines['top'].set_visible(False)
+            ax_bar.spines['right'].set_visible(False)
+            ax_bar.spines['left'].set_color('#cbd5e1')
+            ax_bar.spines['bottom'].set_color('#cbd5e1')
+            ax_bar.tick_params(colors='#475569')
+            for bar in bars:
+                h = bar.get_height()
+                ax_bar.text(bar.get_x() + bar.get_width()/2, h + 15, f"{int(h):,}", ha='center', color='#334155', fontsize=9)
+            plt.tight_layout()
             st.pyplot(fig_bar)
+            plt.close()
 
-        with col_c2:
-            st.write("#### Rasio Sentimen (Diagram Lingkaran)")
-            fig_pie, ax_pie = plt.subplots(figsize=(6, 4))
-            ax_pie.pie([pos_count, neg_count], labels=["Positif", "Negatif"], autopct="%1.1f%%", colors=["#28a745", "#dc3545"], startangle=90)
-            st.pyplot(fig_pie)
+        with col_g2:
+            st.markdown("**WordCloud Kata Dominan**")
+            all_words = df_corpus['comment_clean'].astype(str).str.cat(sep=' ')
+            wc = WordCloud(
+                width=600, 
+                height=420, 
+                background_color='white', 
+                colormap='bone',
+                max_words=60
+            ).generate(all_words)
+            fig_wc, ax_wc = plt.subplots(figsize=(5, 3.5))
+            ax_wc.imshow(wc, interpolation='bilinear')
+            ax_wc.axis('off')
+            plt.tight_layout()
+            st.pyplot(fig_wc)
+            plt.close()
 
     except Exception as e:
-        st.info("Dataset 'labeled_comments.xlsx' belum dimuat untuk dashboard visual.")
+        st.caption("File korpus 'labeled_comments.xlsx' tidak ditemukan.")
 
 # ------------------------------------------------------------
-# TAB 3: Tentang Penelitian
+# TAB 3: Spesifikasi Teknis & Evaluasi
 # ------------------------------------------------------------
-with tab3:
-    st.subheader("Judul Resmi Penelitian:")
-    st.info("**ANALISIS SENTIMEN KOMENTAR PADA PLATFORM YOUTUBE TENTANG FILM JUMBO MENGGUNAKAN ALGORITMA SUPPORT VECTOR MACHINE (SVM) DAN METODE INSET LEXICON**")
-
+with tab_model:
+    st.markdown("### Ringkasan Spesifikasi Model")
+    
     st.markdown("""
-    ### 🔬 Metodologi:
-    1. **Pengumpulan Data**: Scraping komentar YouTube API v3 pada video teaser film animasi "Jumbo".
-    2. **Prapemrosesan (NLP)**: Demojize emoji, normalisasi kata gaul (Kamus Alay), pelestarian kata negasi, stopword removal, dan stemming Sastrawi.
-    3. **Pelabelan Sentimen**: InSet Lexicon berbobot (-5 s/d +5) yang disesuaikan untuk konteks ulasan film. Kelas netral disaring agar model fokus pada polaritas biner nyata.
-    4. **Pembobotan Fitur**: TF-IDF N-gram (1,2) dengan `sublinear_tf=True`.
-    5. **Klasifikasi**: Support Vector Machine (Linear Kernel) dengan `class_weight='balanced'` untuk menangani data tidak seimbang (*class imbalance*).
+    | Komponen | Spesifikasi Teknis |
+    | :--- | :--- |
+    | **Sumber Data** | Komentar YouTube Data API v3 (`video_id: yMqDgbZmBdk`) |
+    | **Metode Pelabelan** | InSet Lexicon Berbobot (-5 s/d +5) dengan penyesuaian domain ulasan film |
+    | **Skema Klasifikasi** | Biner (Sentimen Positif vs Sentimen Negatif) |
+    | **Representasi Fitur** | TF-IDF Vectorizer (Unigram & Bigram, `sublinear_tf=True`, `min_df=2`) |
+    | **Algoritma Utama** | Support Vector Classification (`kernel='linear'`, `class_weight='balanced'`) |
+    | **Validasi Model** | 5-Fold Stratified Cross-Validation |
     """)
+
+    st.markdown("---")
+    st.markdown("### Kinerja Model pada Data Uji (20% Test Split)")
+
+    col_t1, col_t2 = st.columns([3, 2])
+
+    with col_t1:
+        report_data = {
+            "Kelas": ["Negatif", "Positif", "Akurasi Rata-rata"],
+            "Precision": ["0.71", "0.92", "-"],
+            "Recall": ["0.77", "0.89", "-"],
+            "F1-Score": ["0.74", "0.90", "0.86"],
+            "Dukungan Uji": [61, 175, 236]
+        }
+        st.dataframe(pd.DataFrame(report_data), hide_index=True, use_container_width=True)
+
+    with col_t2:
+        st.markdown("""
+        **Catatan Metrik:**
+        - Akurasi pengujian mencapai **86.0%**.
+        - Bobot kelas seimbang (*balanced weighting*) berhasil menjaga *Recall* kelas negatif pada angka **77.0%** tanpa degradasi presisi.
+        """)
